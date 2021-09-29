@@ -1,14 +1,21 @@
 package com.seast.exportoffice.common;
 
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
 import freemarker.template.*;
+import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.lang3.CharEncoding;
+import org.apache.commons.lang3.StringUtils;
+
 import javax.servlet.ServletOutputStream;
 import javax.servlet.http.HttpServletResponse;
 import java.io.*;
 import java.net.URLEncoder;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
+import java.util.*;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+import java.util.zip.ZipOutputStream;
+import com.seast.exportoffice.common.ZipUtil;
 
 /**
  * @Author: limf
@@ -95,7 +102,7 @@ public class WordExportUtils {
         response.setContentType("application/msword");
         try {
             // 设置浏览器以下载的方式处理该文件名（PS浏览设置：下载前询问每个文件的保存位置）
-            response.setHeader("Content-Disposition", "attachment;filename=".concat(String.valueOf(URLEncoder.encode(fileName, "UTF-8"))));
+            response.setHeader("Content-Disposition", "attachment;filename=".concat(String.valueOf(URLEncoder.encode(fileName, CharEncoding.UTF_8))));
         } catch (UnsupportedEncodingException e) {
             e.printStackTrace();
         }
@@ -181,4 +188,165 @@ public class WordExportUtils {
         }
     }
 
+
+    //outputStream 输出流可以自己定义 浏览器或者文件输出流
+    public static void createDocx(Map<String, Object> dataMap, String fileName, HttpServletResponse response) {
+        response.reset();
+        response.setCharacterEncoding(CharEncoding.UTF_8);
+        response.setContentType("application/msword");
+        try {
+            response.setHeader("Content-Disposition", "attachment;filename=" + URLEncoder.encode(fileName, CharEncoding.UTF_8));
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        }
+        String separator = SystemPath.getSeparator();
+        String originDocument = dataMap.get("originDocument")+""; 			// 最初设计的模板docx
+        String documentXmlRels = dataMap.get("documentXmlRels")+"";			// documentXmlRels
+        String documentXml = dataMap.get("documentXml")+""; 				// documentXml
+        OutputStream outputStream = null;
+        ZipOutputStream zipout = null;
+        try {
+            List<Map<String, Object>> picList = Lists.newArrayList();
+            @SuppressWarnings("unchecked")
+            HashMap<String, Object> paramsMap = (HashMap<String, Object>)dataMap.get("paramsMap");
+            HashMap<String, Object> itemMap = null;
+            for(String key : paramsMap.keySet()) {
+                if(key.contains("Base64")) {// 处理图片
+                    String pName = key.replace("Base64", "");
+                    String base64Str = paramsMap.get(key)+"";
+                    itemMap = Maps.newHashMap();
+                    itemMap.put("pName", pName+".jpg");
+                    itemMap.put("base64", base64ToImage(base64Str));
+                    picList.add(itemMap);
+                    dataMap.put(pName, itemMap);
+                }else {
+                    dataMap.put(key, paramsMap.get(key));
+                }
+            }
+            // 图片配置文件模板
+            ByteArrayInputStream documentXmlRelsInput = getFreemarkerContentInputStream(dataMap, documentXmlRels);
+            // 内容模板
+            ByteArrayInputStream documentInput = getFreemarkerContentInputStream(dataMap, documentXml);
+            // 最初设计的模板
+            File docxFile = new File(WordExportUtils.class.getClassLoader().getResource(originDocument).getPath());
+            if (!docxFile.exists()) {
+                docxFile.createNewFile();
+            }
+            @SuppressWarnings("resource")
+            ZipFile zipFile = new ZipFile(docxFile);
+            Enumeration<? extends ZipEntry> zipEntrys = zipFile.entries();
+            outputStream = response.getOutputStream();
+            zipout = new ZipOutputStream(outputStream);
+            //开始覆盖文档------------------
+            int len = -1;
+            byte[] buffer = new byte[1024];
+            while (zipEntrys.hasMoreElements()) {
+                ZipEntry next = zipEntrys.nextElement();
+                System.out.println("next = " + next);
+                InputStream is = zipFile.getInputStream(next);
+                // 剔除media文件夹
+                if (next.toString().indexOf("media") < 0) {
+                    zipout.putNextEntry(new ZipEntry(next.getName()));
+                    if (next.getName().indexOf("document.xml.rels") > 0) { //如果是document.xml.rels由我们输入
+                        if (documentXmlRelsInput != null) {
+                            while ((len = documentXmlRelsInput.read(buffer)) != -1) {
+                                zipout.write(buffer, 0, len);
+                            }
+                            documentXmlRelsInput.close();
+                        }
+                    } else if ("word/document.xml".equals(next.getName())) {//如果是word/document.xml由我们输入
+                        if (documentInput != null) {
+                            while ((len = documentInput.read(buffer)) != -1) {
+                                zipout.write(buffer, 0, len);
+                            }
+                            documentInput.close();
+                        }
+                    } else {
+                        while ((len = is.read(buffer)) != -1) {
+                            zipout.write(buffer, 0, len);
+                        }
+                        is.close();
+                    }
+                }
+            }
+
+
+
+            String zipEntryName;
+            for (Map<String, Object> pic : picList) {
+                for(Enumeration<?> e = zipFile.entries(); e.hasMoreElements(); ) {
+                    ZipEntry entryIn = (ZipEntry) e.nextElement();
+                    zipEntryName = entryIn.getName();
+                    System.out.println("zipEntryName = " + zipEntryName);
+                    if(zipEntryName.endsWith("media")) {
+                        FileInputStream fis = new FileInputStream(String.valueOf(pic.get("pName")));
+                        ZipEntry zipEntry = new ZipEntry(zipEntryName);
+                        zipout.putNextEntry(zipEntry);
+                        byte[] bytes = new byte[1024];
+                        int length;
+                        while ((length = fis.read(bytes)) >= 0) {
+                            zipout.write(bytes, 0, length);
+                        }
+                        zipout.closeEntry();
+                        fis.close();
+                    }
+                } // enf of for
+            }
+            // 写入图片
+            for (Map<String, Object> pic : picList) {
+//                ZipUtil.writeZip(new File("C:\\Users\\WIN10\\Desktop\\image\\media"),
+//                        "word" + separator,
+//                        zipout);
+
+//                ZipEntry next = new ZipEntry("word" + separator + "media" + separator + pic.get("pName"));
+//                zipout.putNextEntry(new ZipEntry(next.toString()));
+//                // InputStream in = (ByteArrayInputStream)pic.get("base64");
+//                InputStream in = new FileInputStream("C:\\Users\\WIN10\\Desktop\\image\\my\\imagePath.jpg");
+//                while ((len = in.read(buffer)) != -1) {
+//                    zipout.write(buffer, 0, len);
+//                    zipout.flush();
+//                }
+//                in.close();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }finally {
+            if(zipout!=null){
+                try {
+                    zipout.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+            if(outputStream!=null){
+                try {
+                    outputStream.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
+    public static ByteArrayInputStream base64ToImage(String base64Str) {
+        ByteArrayInputStream bais = null;
+        if (base64Str == null) {
+            return bais;
+        }
+        Base64 base64 = new Base64();
+        try {
+            if(StringUtils.isEmpty(base64Str)) {
+                return bais;
+            }
+            if(base64Str.indexOf(",")!=-1) {
+                base64Str = base64Str.substring(base64Str.indexOf(",")+1);
+            }
+            byte[] bytes = base64.decodeBase64(base64Str);
+            bais = new ByteArrayInputStream(bytes);
+            return bais;
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return bais;
+    }
 }
