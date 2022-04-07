@@ -17,8 +17,8 @@ import java.util.Map;
  * @Description: 导出Office
  */
 @Controller
-@RequestMapping("/exportoffice")
-public class ExportOfficeController {
+@RequestMapping("/word")
+public class ExportWordController {
     /**
      * 导出Word XML
      * @param response
@@ -33,7 +33,7 @@ public class ExportOfficeController {
     }
 
     /**
-     * 导出多个word，压缩成zip
+     * 导出多个word XML，压缩成zip
      * @param response
      */
     @RequestMapping("/exportWordXMLBatch")
